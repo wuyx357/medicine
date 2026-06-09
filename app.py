@@ -329,44 +329,92 @@ elif st.session_state.page == "add":
                     st.text(f"  {bk}  →  {BARCODE_MAP[bk]['name']}")
 
     with tab2:
-        st.info("输入药品名称，从推荐列表中选择")
-        drug_name = st.text_input("搜索药品名称", placeholder="例如：阿莫西林")
+        st.info("输入药品名称 或 条形码编号，快速添加药品")
 
-        if drug_name:
-            suggestions = search_drugs(drug_name)
-            if suggestions:
-                st.caption(f"💡 建议：{' / '.join(suggestions)}")
-                for sug in suggestions:
-                    if sug in DRUGS:
-                        info = DRUGS[sug]
-                        if st.button(f"📌 {sug}（{info['dosage']}，{info['frequency']}）", key=f"sel_{sug}", use_container_width=True):
-                            start_date = date.today().isoformat()
-                            end_date = (date.today() + timedelta(days=info.get('total_days', 30))).isoformat()
-                            db.add_medicine(
-                                name=sug, dosage=info['dosage'],
-                                frequency=info['frequency'], times=info['times'],
-                                total_count=info.get('total_days', 30),
-                                start_date=start_date, end_date=end_date,
-                                notes=info.get('notes', '')
-                            )
-                            st.balloons()
-                            st.success(f"🎉 {sug} 已加入药箱！")
-                            time.sleep(1.5)
-                            st.rerun()
-            else:
-                # 不在药库里的自定义药品
-                if st.button(f"➕ 手动添加「{drug_name}」", use_container_width=True):
-                    start_date = date.today().isoformat()
-                    end_date = (date.today() + timedelta(days=30)).isoformat()
-                    db.add_medicine(
-                        name=drug_name, dosage="1粒", frequency="每日1次",
-                        times=["08:00"], total_count=30,
-                        start_date=start_date, end_date=end_date, notes=""
-                    )
-                    st.balloons()
-                    st.success(f"🎉 {drug_name} 已加入药箱！")
-                    time.sleep(1.5)
-                    st.rerun()
+        search_mode = st.radio("选择输入方式", ["🔤 药品名称", "🔢 条形码"], horizontal=True, label_visibility="collapsed")
+
+        if search_mode == "🔤 药品名称":
+            drug_name = st.text_input("搜索药品名称", placeholder="例如：阿莫西林", key="manual_name")
+
+            if drug_name:
+                suggestions = search_drugs(drug_name)
+                if suggestions:
+                    st.caption(f"💡 建议：{' / '.join(suggestions)}")
+                    for sug in suggestions:
+                        if sug in DRUGS:
+                            info = DRUGS[sug]
+                            if st.button(f"📌 {sug}（{info['dosage']}，{info['frequency']}）", key=f"sel_{sug}", use_container_width=True):
+                                start_date = date.today().isoformat()
+                                end_date = (date.today() + timedelta(days=info.get('total_days', 30))).isoformat()
+                                db.add_medicine(
+                                    name=sug, dosage=info['dosage'],
+                                    frequency=info['frequency'], times=info['times'],
+                                    total_count=info.get('total_days', 30),
+                                    start_date=start_date, end_date=end_date,
+                                    notes=info.get('notes', '')
+                                )
+                                st.balloons()
+                                st.success(f"🎉 {sug} 已加入药箱！")
+                                time.sleep(1.5)
+                                st.rerun()
+                else:
+                    # 不在药库里的自定义药品
+                    if st.button(f"➕ 手动添加「{drug_name}」", use_container_width=True):
+                        start_date = date.today().isoformat()
+                        end_date = (date.today() + timedelta(days=30)).isoformat()
+                        db.add_medicine(
+                            name=drug_name, dosage="1粒", frequency="每日1次",
+                            times=["08:00"], total_count=30,
+                            start_date=start_date, end_date=end_date, notes=""
+                        )
+                        st.balloons()
+                        st.success(f"🎉 {drug_name} 已加入药箱！")
+                        time.sleep(1.5)
+                        st.rerun()
+
+        else:
+            barcode_input = st.text_input(
+                "输入条形码编号",
+                placeholder="例如：6903447400157",
+                key="manual_barcode",
+                help="输入药品包装条形码下方的13位数字"
+            )
+
+            if barcode_input:
+                drug_name, drug_info = lookup_barcode(barcode_input)
+
+                if drug_info:
+                    st.success(f"✅ **匹配到：{drug_name}**")
+
+                    with st.container(border=True):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**💊 药品**：{drug_info['name']}")
+                            st.markdown(f"**📏 用量**：{drug_info['dosage']}")
+                        with col_b:
+                            st.markdown(f"**📅 频率**：{drug_info['frequency']}")
+                            st.markdown(f"**⏰ 时间**：{'、'.join(drug_info['times'])}")
+                        if drug_info.get('notes'):
+                            st.caption(f"📝 {drug_info['notes']}")
+
+                    if st.button("✅ 加入药箱", use_container_width=True, type="primary", key="add_by_barcode_manual"):
+                        db.add_medicine(
+                            name=drug_info['name'], dosage=drug_info['dosage'],
+                            frequency=drug_info['frequency'], times=drug_info['times'],
+                            total_count=drug_info.get('total_days', 30),
+                            start_date=date.today().isoformat(),
+                            end_date=(date.today() + timedelta(days=drug_info.get('total_days', 30))).isoformat(),
+                            notes=drug_info.get('notes', '')
+                        )
+                        st.balloons()
+                        st.success(f"🎉 {drug_info['name']} 已加入药箱！")
+                        time.sleep(1.5)
+                        st.rerun()
+                else:
+                    st.warning(f"⚠️ 条码 `{barcode_input}` 未匹配到已知药品")
+                    st.caption("支持的条码示例：")
+                    for bk in BARCODE_KEYS[:8]:
+                        st.text(f"  {bk}  →  {BARCODE_MAP[bk]['name']}")
 
 # ========== 3. 我的药箱（含起止日期）==========
 elif st.session_state.page == "cabinet":
