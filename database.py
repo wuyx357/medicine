@@ -63,35 +63,29 @@ class Database:
 
     # ===================== 药品管理 =====================
 
-    def add_medicine(self, name: str, dosage: str = "1粒",
-                     frequency: str = "每日1次", times: List[str] = None,
-                     total_count: int = 30, notes: str = "") -> int:
-        """添加药品，返回 id"""
-        if times is None:
-            times = ["08:00"]
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO medicines (name, dosage, frequency, times, total_count, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (name, dosage, frequency, json.dumps(times, ensure_ascii=False), total_count, notes))
-        medicine_id = cursor.lastrowid
+    def add_medicine(self, name, dosage, frequency, times, total_count, start_date=None, end_date=None, notes=""):
+        import json
+        from datetime import date
 
-        # 创建今日及未来 7 天的服药记录
-        today = datetime.date.today()
-        for i in range(7):
-            d = today + datetime.timedelta(days=i)
-            date_str = d.strftime("%Y-%m-%d")
-            for t in times:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO medication_log
-                    (medicine_id, medicine_name, scheduled_time, status, date)
-                    VALUES (?, ?, ?, '待服', ?)
-                """, (medicine_id, name, t, date_str))
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # 如果没有传入日期，使用默认值
+        if start_date is None:
+            start_date = date.today().isoformat()
+        if end_date is None:
+            end_date = (date.today() + timedelta(days=30)).isoformat()
+
+        # 将 times 列表转为 JSON 字符串存储
+        times_json = json.dumps(times)
+
+        cursor.execute('''
+            INSERT INTO medicines (name, dosage, frequency, times, total_count, start_date, end_date, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (name, dosage, frequency, times_json, total_count, start_date, end_date, notes))
 
         conn.commit()
         conn.close()
-        return medicine_id
 
     def get_medicines(self) -> List[Dict]:
         """获取所有药品"""
