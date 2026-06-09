@@ -18,6 +18,121 @@ from datetime import date, timedelta
 from difflib import get_close_matches
 from database import Database
 
+import base64
+import requests
+from PIL import Image
+import io
+
+# ========== 百度OCR配置 ==========
+# TODO: 替换成你的实际值
+#BAIDU_API_KEY = "你的API Key"
+#BAIDU_SECRET_KEY = "你的Secret Key"
+
+
+def get_baidu_access_token():
+    """获取百度OCR的access_token"""
+    url = "https://aip.baidubce.com/oauth/2.0/token"
+    params = {
+        "grant_type": "client_credentials",
+        "client_id": BAIDU_API_KEY,
+        "client_secret": BAIDU_SECRET_KEY
+    }
+    try:
+        response = requests.post(url, params=params, timeout=10)
+        result = response.json()
+        return result.get("access_token")
+    except Exception as e:
+        st.error(f"获取access_token失败：{e}")
+        return None
+
+
+def extract_medicine_from_ocr(text):
+    """从OCR识别的文本中提取药品名称"""
+    # 先检查是否直接匹配已知药品
+    for drug_name in DRUG_NAMES:
+        if drug_name in text:
+            return drug_name
+
+    # 匹配药品名称模式（以胶囊/片/丸/颗粒等结尾）
+    import re
+    patterns = [
+        r'([\u4e00-\ufa29]{2,10})(?:胶囊|片|丸|颗粒|口服液|滴丸|分散片|缓释片|肠溶片)',
+        r'([A-Za-z]+)\s?(?:Capsules|Tablets)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            candidate = match.group(1)
+            # 尝试模糊匹配已知药品
+            from difflib import get_close_matches
+            matches = get_close_matches(candidate, DRUG_NAMES, n=1, cutoff=0.5)
+            if matches:
+                return matches[0]
+            return candidate
+
+    # 返回第一行有意义的文字
+    lines = [l.strip() for l in text.split('\n') if len(l.strip()) > 2]
+    if lines:
+        return lines[0][:30]
+    return None
+
+
+def recognize_drug(image_data):
+    """调用百度OCR识别药品"""
+    # 1. 获取access_token
+    access_token = get_baidu_access_token()
+    if not access_token:
+        return "API认证失败，请检查配置"
+
+    # 2. 准备图片（确保大小合适）
+    try:
+        # 转换图片格式
+        image = Image.open(io.BytesIO(image_data))
+        # 压缩图片（OCR不需要太大）
+        image.thumbnail((1280, 1280))
+        # 转回bytes
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=85)
+        img_bytes = buffer.getvalue()
+    except Exception as e:
+        st.error(f"图片处理失败：{e}")
+        return None
+
+    # 3. 调用OCR API
+    url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token={access_token}"
+    img_base64 = base64.b64encode(img_bytes).decode()
+
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    data = {'image': img_base64}
+
+    try:
+        response = requests.post(url, headers=headers, data=data, timeout=30)
+        result = response.json()
+
+        if 'error_code' in result:
+            st.error(f"OCR识别失败：{result.get('error_msg', '未知错误')}")
+            return None
+
+        # 提取所有文字
+        texts = [item['words'] for item in result.get('words_result', [])]
+        full_text = ' '.join(texts)
+
+        # 从文字中提取药品名
+        medicine_name = extract_medicine_from_ocr(full_text)
+
+        if medicine_name:
+            return medicine_name
+        else:
+            st.warning(f"未能识别出药品名，识别到的文字：{full_text[:100]}...")
+            return None
+
+    except requests.exceptions.Timeout:
+        st.error("OCR请求超时，请稍后重试")
+        return None
+    except Exception as e:
+        st.error(f"OCR识别异常：{e}")
+        return None
+
 # ========== 页面配置 ==========
 st.set_page_config(page_title="AI用药伴侣", page_icon="💊", layout="centered")
 
@@ -211,31 +326,35 @@ elif st.session_state.page == "add":
         uploaded_file = st.file_uploader("拍摄或上传药品照片", type=["jpg", "jpeg", "png"])
         if uploaded_file:
             with st.spinner("正在识别药品..."):
-                time.sleep(1.5)
+                # 调用真实的OCR识别
                 recognized_name = recognize_drug(uploaded_file.getvalue())
-                st.success(f"识别结果：{recognized_name}")
 
-                if recognized_name in DRUGS:
-                    drug_info = DRUGS[recognized_name]
-                    st.session_state.rec = {
-                        "name": recognized_name,
-                        "dosage": drug_info["dosage"],
-                        "frequency": drug_info["frequency"],
-                        "times": drug_info["times"],
-                        "notes": drug_info["notes"],
-                        "total_days": drug_info["total_days"]
-                    }
+                if recognized_name is None:
+                    st.error("识别失败，请尝试手动输入")
                 else:
-                    st.session_state.rec = {
-                        "name": recognized_name,
-                        "dosage": "1粒",
-                        "frequency": "每日1次",
-                        "times": ["08:00"],
-                        "notes": "",
-                        "total_days": 30
-                    }
-                st.session_state.show_confirm = True
-                st.rerun()
+                    st.success(f"识别结果：{recognized_name}")
+
+                    if recognized_name in DRUGS:
+                        drug_info = DRUGS[recognized_name]
+                        st.session_state.rec = {
+                            "name": recognized_name,
+                            "dosage": drug_info["dosage"],
+                            "frequency": drug_info["frequency"],
+                            "times": drug_info["times"],
+                            "notes": drug_info["notes"],
+                            "total_days": drug_info["total_days"]
+                        }
+                    else:
+                        st.session_state.rec = {
+                            "name": recognized_name,
+                            "dosage": "1粒",
+                            "frequency": "每日1次",
+                            "times": ["08:00"],
+                            "notes": "",
+                            "total_days": 30
+                        }
+                    st.session_state.show_confirm = True
+                    st.rerun()
 
     with tab2:
         drug_name = st.text_input("输入药品名称", placeholder="例如：阿莫西林胶囊")
