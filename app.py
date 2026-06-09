@@ -333,7 +333,8 @@ elif st.session_state.page == "add":
 
         search_mode = st.radio("选择输入方式", ["🔤 药品名称", "🔢 条形码"], horizontal=True, label_visibility="collapsed")
 
-        if search_mode == "🔤 药品名称":
+        with st.expander("🔤 通过药品名称添加", expanded=True):
+        
             drug_name = st.text_input("搜索药品名称", placeholder="例如：阿莫西林", key="manual_name")
 
             if drug_name:
@@ -357,7 +358,7 @@ elif st.session_state.page == "add":
                                 st.success(f"🎉 {sug} 已加入药箱！")
                                 time.sleep(1.5)
                                 st.rerun()
-                else:
+        with st.expander("🔢 通过条形码添加"):
                     # 不在药库里的自定义药品
                     if st.button(f"➕ 手动添加「{drug_name}」", use_container_width=True):
                         start_date = date.today().isoformat()
