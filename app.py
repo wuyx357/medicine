@@ -1,36 +1,131 @@
 """
-AI 用药伴侣 - 零自定义CSS版
+AI 用药伴侣 - 改进版
+功能：
+1. 今日用药：日历式管理，显示每日用药计划
+2. 拍照加药：药品名称识别 + 输入时实时搜索（模糊匹配）
+3. 我的药箱：支持设置药品起止日期（用药周期）
+4. AI问答：接入 DeepSeek 模型生成真实回答
 """
+
 import streamlit as st
-import datetime, os, random, time, requests
+import datetime
+import os
+import random
+import time
+import requests
+import json
+from datetime import date, timedelta
+from difflib import get_close_matches
 from database import Database
 
-st.set_page_config(page_title="AI用药伴侣", page_icon="💊", layout="centered",
-                   initial_sidebar_state="collapsed")
+# ========== 页面配置 ==========
+st.set_page_config(page_title="AI用药伴侣", page_icon="💊", layout="centered")
 
+# ========== 初始化数据库 ==========
 DB_PATH = os.path.join(os.path.dirname(__file__), "medicine.db")
 if "db" not in st.session_state:
     st.session_state.db = Database(DB_PATH)
+    # 添加演示数据
     if not st.session_state.db.get_medicines():
-        for d in [
+        demo_medicines = [
             {"name": "硝苯地平缓释片", "dosage": "1片", "frequency": "每日1次",
-             "times": ["08:00"], "total_count": 28, "notes": "降压药，早餐后服用"},
+             "times": ["08:00"], "total_count": 28, "start_date": date.today().isoformat(),
+             "end_date": (date.today() + timedelta(days=28)).isoformat(), "notes": "降压药，早餐后服用"},
             {"name": "二甲双胍片", "dosage": "1片", "frequency": "每日2次",
-             "times": ["08:00", "20:00"], "total_count": 56, "notes": "降糖药，餐后服用"},
+             "times": ["08:00", "20:00"], "total_count": 56, "start_date": date.today().isoformat(),
+             "end_date": (date.today() + timedelta(days=56)).isoformat(), "notes": "降糖药，餐后服用"},
             {"name": "阿托伐他汀钙片", "dosage": "1粒", "frequency": "每日1次",
-             "times": ["21:00"], "total_count": 30, "notes": "降脂药，睡前服用"},
-        ]:
-            st.session_state.db.add_medicine(**d)
+             "times": ["21:00"], "total_count": 30, "start_date": date.today().isoformat(),
+             "end_date": (date.today() + timedelta(days=30)).isoformat(), "notes": "降脂药，睡前服用"},
+        ]
+        for med in demo_medicines:
+            st.session_state.db.add_medicine(**med)
 
 db = st.session_state.db
-for key, default in [("page", "home"), ("add_step", 0)]:
-    if key not in st.session_state:
-        st.session_state[key] = default
 
+# ========== 初始化页面状态 ==========
+if "page" not in st.session_state:
+    st.session_state.page = "home"
+if "selected_date" not in st.session_state:
+    st.session_state.selected_date = date.today()
+
+# ========== 药品数据库（用于识别和搜索）==========
+DRUGS = {
+    "阿莫西林胶囊": {"dosage": "1粒", "frequency": "每日3次", "times": ["08:00", "14:00", "20:00"],
+                  "notes": "抗生素，饭后服用", "total_days": 7},
+    "硝苯地平缓释片": {"dosage": "1片", "frequency": "每日1次", "times": ["08:00"],
+                    "notes": "降压药，早餐后服用", "total_days": 28},
+    "二甲双胍片": {"dosage": "1片", "frequency": "每日2次", "times": ["08:00", "20:00"],
+                 "notes": "降糖药，餐后服用", "total_days": 56},
+    "阿托伐他汀钙片": {"dosage": "1粒", "frequency": "每日1次", "times": ["21:00"],
+                     "notes": "降脂药，睡前服用", "total_days": 30},
+    "布洛芬缓释胶囊": {"dosage": "1粒", "frequency": "每日2次", "times": ["08:00", "20:00"],
+                     "notes": "止痛消炎，饭后服用", "total_days": 5},
+    "奥美拉唑肠溶胶囊": {"dosage": "1粒", "frequency": "每日1次", "times": ["07:00"],
+                       "notes": "胃药，空腹服用", "total_days": 14},
+    "氯沙坦钾片": {"dosage": "1片", "frequency": "每日1次", "times": ["08:00"],
+                 "notes": "降压药", "total_days": 30},
+    "氨氯地平片": {"dosage": "1片", "frequency": "每日1次", "times": ["08:00"],
+                 "notes": "降压药", "total_days": 30},
+    "复方丹参滴丸": {"dosage": "10粒", "frequency": "每日3次", "times": ["08:00", "14:00", "20:00"],
+                   "notes": "心血管用药", "total_days": 30},
+    "头孢克肟胶囊": {"dosage": "1粒", "frequency": "每日2次", "times": ["08:00", "20:00"],
+                   "notes": "抗生素，饭后服用", "total_days": 7},
+    "感冒灵颗粒": {"dosage": "1袋", "frequency": "每日3次", "times": ["08:00", "14:00", "20:00"],
+                "notes": "感冒药，温水冲服", "total_days": 5},
+    "维生素C片": {"dosage": "2片", "frequency": "每日1次", "times": ["08:00"],
+               "notes": "补充维生素", "total_days": 60},
+}
+
+# 药品名称列表（用于搜索）
+DRUG_NAMES = list(DRUGS.keys())
+
+# ========== AI 问答配置 ==========
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+def get_ai_answer(question: str) -> str:
+    """调用 DeepSeek API 获取回答"""
+    if not DEEPSEEK_API_KEY:
+        return "⚠️ API密钥未配置，请在环境变量中设置 DEEPSEEK_API_KEY"
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "你是一个专业的用药顾问，回答用药相关问题时要准确、安全、易懂。不知道的就说建议咨询医生。"},
+                {"role": "user", "content": question}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 500
+        }
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            return f"⚠️ API调用失败：{response.status_code}"
+    except Exception as e:
+        return f"⚠️ 请求失败：{str(e)}"
+
+# ========== 辅助函数 ==========
+def search_drugs(query: str, max_results: int = 5):
+    """模糊搜索药品名称"""
+    if not query:
+        return []
+    matches = get_close_matches(query, DRUG_NAMES, n=max_results, cutoff=0.4)
+    # 同时匹配包含关键词的
+    extra = [d for d in DRUG_NAMES if query in d and d not in matches][:max_results - len(matches)]
+    return matches + extra
+
+# ========== 导航栏 ==========
 PAGES = {"🏠 今日用药": "home", "📷 拍照加药": "add",
          "💊 我的药箱": "cabinet", "🤖 AI问答": "qa"}
 
-cols = st.columns(4)
+cols = st.columns(len(PAGES))
 for i, (label, page) in enumerate(PAGES.items()):
     with cols[i]:
         if st.button(label, use_container_width=True,
@@ -38,214 +133,275 @@ for i, (label, page) in enumerate(PAGES.items()):
             st.session_state.page = page
             st.rerun()
 
-# ========== 主页 ==========
+# ========== 1. 今日用药（日历式管理）==========
 if st.session_state.page == "home":
-    st.title("💊 今日用药")
-    now = datetime.datetime.now()
-    st.caption(f"{now.strftime('%Y年%m月%d日')} 星期{'一二三四五六日'[now.weekday()]}")
+    st.title("📅 今日用药")
 
-    for o in db.get_overdue():
-        st.warning(f"⚠️ {o['medicine_name']} 应在 {o['scheduled_time']} 服用，已超时！")
-    for u in db.get_upcoming(30):
-        st.info(f"🔔 {u['medicine_name']} {u['scheduled_time']} 即将服药")
+    # 日历选择器
+    col1, col2, col3 = st.columns([1, 3, 1])
+    with col1:
+        if st.button("◀ 前一天"):
+            st.session_state.selected_date -= timedelta(days=1)
+            st.rerun()
+    with col2:
+        selected = st.date_input("选择日期", st.session_state.selected_date, label_visibility="collapsed")
+        st.session_state.selected_date = selected
+    with col3:
+        if st.button("后一天 ▶"):
+            st.session_state.selected_date += timedelta(days=1)
+            st.rerun()
 
-    logs = db.get_today_logs()
-    if not logs:
-        st.info("📭 暂无药品，请先拍照加药")
+    st.markdown(f"### {st.session_state.selected_date.strftime('%Y年%m月%d日')} {['一','二','三','四','五','六','日'][st.session_state.selected_date.weekday()]}")
+
+    # 获取该日期的用药计划
+    medicines = db.get_medicines()
+    today_logs = db.get_today_logs() if st.session_state.selected_date == date.today() else []
+
+    # 筛选有效药品（在用药周期内）
+    valid_medicines = []
+    for med in medicines:
+        start = med.get("start_date")
+        end = med.get("end_date")
+        if start and end:
+            if start <= st.session_state.selected_date.isoformat() <= end:
+                valid_medicines.append(med)
+        else:
+            valid_medicines.append(med)
+
+    if not valid_medicines:
+        st.info("📭 当天没有用药计划")
     else:
-        taken = sum(1 for l in logs if l["status"] == "已服")
-        missed = sum(1 for l in logs if l["status"] == "漏服")
-        pending = len(logs) - taken - missed
-        c1, c2, c3 = st.columns(3)
-        c1.metric("已服", taken); c2.metric("待服", pending); c3.metric("漏服", missed)
-
-        if taken == len(logs):
-            st.success("🎉 太棒了！今日药品已全部服用！")
-
-        now_t = now.strftime("%H:%M")
-        for log in logs:
-            n, s, stt, lid = log["medicine_name"], log["scheduled_time"], log["status"], log["id"]
-            st.markdown(f"**{'🟢' if stt=='已服' else '🔴' if stt=='漏服' else '⚪'} {n}** — {s}")
-            if stt == "待服":
-                c1, c2 = st.columns(2)
-                if c1.button(f"✅ 已服", key=f"tk{lid}"): db.mark_taken(lid); st.rerun()
-                if c2.button(f"❌ 漏服", key=f"ms{lid}"): db.mark_missed(lid); st.rerun()
-            elif stt == "已服":
-                st.caption(f"已于 {log.get('actual_time','')} 服用")
+        for med in valid_medicines:
+            st.markdown(f"**💊 {med['name']}** - {med['dosage']} - {med['frequency']}")
+            times = med.get("times", [])
+            for t in times:
+                # 检查是否已服用
+                taken = any(l for l in today_logs if l["medicine_name"] == med["name"] and l["scheduled_time"] == t)
+                if taken:
+                    st.success(f"✅ {t} 已服用")
+                else:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.warning(f"⏰ {t} 待服用")
+                    with col2:
+                        if st.button("已服", key=f"take_{med['id']}_{t}"):
+                            db.mark_taken_by_name(med["name"], t)
+                            st.rerun()
             st.divider()
 
-    st.caption("⏰ 每30秒自动刷新")
-    time.sleep(30)
-    st.rerun()
+    # 统计数据
+    total = sum(len(med.get("times", [])) for med in valid_medicines)
+    taken_count = len(today_logs)
+    st.caption(f"📊 今日总计：{taken_count}/{total} 已服用")
 
-# ========== 拍照加药 ==========
+# ========== 2. 拍照加药（药品识别 + 实时搜索）==========
 elif st.session_state.page == "add":
     st.title("📷 拍照加药")
-    DRUGS = {
-        "阿莫西林胶囊": ("1粒", "每日3次", ["08:00","14:00","20:00"], "抗生素，饭后服用"),
-        "硝苯地平缓释片": ("1片", "每日1次", ["08:00"], "降压药，早餐后服用"),
-        "二甲双胍片": ("1片", "每日2次", ["08:00","20:00"], "降糖药，餐后服用"),
-        "阿托伐他汀钙片": ("1粒", "每日1次", ["21:00"], "降脂药，睡前服用"),
-        "布洛芬缓释胶囊": ("1粒", "每日2次", ["08:00","20:00"], "止痛消炎"),
-        "奥美拉唑肠溶胶囊": ("1粒", "每日1次", ["07:00"], "胃药，空腹服用"),
-        "氯沙坦钾片": ("1片", "每日1次", ["08:00"], "降压药"),
-        "氨氯地平片": ("1片", "每日1次", ["08:00"], "降压药"),
-        "复方丹参滴丸": ("10粒", "每日3次", ["08:00","14:00","20:00"], "心血管用药"),
-    }
-    KW = {"阿莫西":"阿莫西林胶囊","硝苯":"硝苯地平缓释片","二甲双":"二甲双胍片",
-          "布洛芬":"布洛芬缓释胶囊","奥美":"奥美拉唑肠溶胶囊","氯沙":"氯沙坦钾片",
-          "氨氯":"氨氯地平片","复方丹参":"复方丹参滴丸","丹参":"复方丹参滴丸"}
 
-    def sim(img=None):
-        names = list(DRUGS.keys())
-        if img: random.seed(sum(img[:100]))
-        n = names[random.randint(0,len(names)-1)]
-        d,f,t,nt = DRUGS[n]
-        return {"name":n,"confidence":round(random.uniform(0.82,0.99),2),
-                "dosage":d,"frequency":f,"times":t,"notes":nt}
+    # 识别药品名称的函数
+    def recognize_drug(image_data):
+        """模拟AI识别药品（实际可接入OCR+药品数据库）"""
+        # 模拟识别逻辑：随机返回一个药品名
+        import random
+        return random.choice(DRUG_NAMES)
 
-    def match(t):
-        t = t.strip()
-        if t in DRUGS: return t
-        for k,v in KW.items():
-            if k in t: return v
-        return t
+    tab1, tab2 = st.tabs(["📸 拍照识别", "✏️ 手动输入"])
 
-    step = st.session_state.add_step
-    if step == 0:
-        st.info("📸 上传药品照片，AI自动识别")
-        up = st.file_uploader("选择照片", type=["jpg","jpeg","png"], label_visibility="collapsed")
-        if up:
-            with st.spinner("识别中..."):
+    with tab1:
+        uploaded_file = st.file_uploader("拍摄或上传药品照片", type=["jpg", "jpeg", "png"])
+        if uploaded_file:
+            with st.spinner("正在识别药品..."):
                 time.sleep(1.5)
-                st.session_state.rec = sim(up.getvalue())
-            st.session_state.add_step = 1
-            st.rerun()
-        st.caption("或直接输入药名：")
-        m = st.text_input("药名", placeholder="阿莫西林胶囊", label_visibility="collapsed")
-        if m:
-            name = match(m)
-            if name in DRUGS:
-                d,f,t,n = DRUGS[name]
-                st.session_state.rec = {"name":name,"confidence":1.0,"dosage":d,"frequency":f,"times":t,"notes":n}
-            else:
-                st.session_state.rec = {"name":name,"confidence":1.0,"dosage":"1粒","frequency":"每日1次","times":["08:00"],"notes":""}
-            st.session_state.add_step = 1
-            st.rerun()
+                recognized_name = recognize_drug(uploaded_file.getvalue())
+                st.success(f"识别结果：{recognized_name}")
 
-    elif step == 1:
-        r = st.session_state.rec
-        st.success(f"识别结果：**{r['name']}**（可信度 {r['confidence']*100:.0f}%）")
-        name = st.text_input("药品名称", r["name"])
-        c1,c2 = st.columns(2)
-        if c1.button("✅ 下一步", use_container_width=True):
-            r["name"] = name; st.session_state.add_step = 2; st.rerun()
-        if c2.button("🔄 重新识别", use_container_width=True):
-            st.session_state.add_step = 0; st.rerun()
+                if recognized_name in DRUGS:
+                    drug_info = DRUGS[recognized_name]
+                    st.session_state.rec = {
+                        "name": recognized_name,
+                        "dosage": drug_info["dosage"],
+                        "frequency": drug_info["frequency"],
+                        "times": drug_info["times"],
+                        "notes": drug_info["notes"],
+                        "total_days": drug_info["total_days"]
+                    }
+                else:
+                    st.session_state.rec = {
+                        "name": recognized_name,
+                        "dosage": "1粒",
+                        "frequency": "每日1次",
+                        "times": ["08:00"],
+                        "notes": "",
+                        "total_days": 30
+                    }
+                st.session_state.show_confirm = True
+                st.rerun()
 
-    elif step == 2:
-        r = st.session_state.rec
-        st.markdown(f"**💊 {r['name']}**")
-        st.info("AI推荐用药计划，可修改：")
-        dosage = st.text_input("每次用量", r["dosage"])
-        freq_opts = ["每日1次","每日2次","每日3次","自定义"]
-        fi = freq_opts.index(r["frequency"]) if r["frequency"] in freq_opts else 0
-        freq = st.selectbox("频率", freq_opts, index=fi)
-        T = {"每日1次":["08:00"],"每日2次":["08:00","20:00"],"每日3次":["08:00","14:00","20:00"]}
-        if freq == "自定义":
-            ts = st.text_input("时间（逗号分隔）", ",".join(r["times"]))
-            times = [t.strip() for t in ts.split(",") if t.strip()]
-        else:
-            times = T[freq]; st.caption(f"建议时间：{'、'.join(times)}")
-        total = st.number_input("总数量（粒/片）", 1, 999, r.get("total_count",30), step=10)
-        notes = st.text_area("备注", r.get("notes",""))
-        if st.button("💾 加入药箱", use_container_width=True):
-            db.add_medicine(name=r["name"],dosage=dosage,frequency=freq,times=times,total_count=total,notes=notes)
-            st.balloons(); st.success(f"✅ 已加入药箱！")
-            st.session_state.add_step = 0
-            time.sleep(1.5); st.session_state.page="home"; st.rerun()
+    with tab2:
+        drug_name = st.text_input("输入药品名称", placeholder="例如：阿莫西林胶囊")
+        if drug_name:
+            suggestions = search_drugs(drug_name)
+            if suggestions:
+                st.caption(f"建议：{' / '.join(suggestions)}")
+                if st.button(f"使用：{suggestions[0]}"):
+                    drug_name = suggestions[0]
+                    if drug_name in DRUGS:
+                        drug_info = DRUGS[drug_name]
+                        st.session_state.rec = {
+                            "name": drug_name,
+                            "dosage": drug_info["dosage"],
+                            "frequency": drug_info["frequency"],
+                            "times": drug_info["times"],
+                            "notes": drug_info["notes"],
+                            "total_days": drug_info["total_days"]
+                        }
+                    else:
+                        st.session_state.rec = {
+                            "name": drug_name,
+                            "dosage": "1粒",
+                            "frequency": "每日1次",
+                            "times": ["08:00"],
+                            "notes": "",
+                            "total_days": 30
+                        }
+                    st.session_state.show_confirm = True
+                    st.rerun()
 
-# ========== 药箱 ==========
+    # 确认添加
+    if st.session_state.get("show_confirm"):
+        rec = st.session_state.rec
+        st.markdown(f"### 确认药品信息")
+        st.write(f"**名称**：{rec['name']}")
+        st.write(f"**用量**：{rec['dosage']}")
+        st.write(f"**频率**：{rec['frequency']}")
+        st.write(f"**时间**：{'、'.join(rec['times'])}")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✅ 确认添加"):
+                start_date = date.today().isoformat()
+                end_date = (date.today() + timedelta(days=rec.get('total_days', 30))).isoformat()
+                db.add_medicine(
+                    name=rec['name'], dosage=rec['dosage'], frequency=rec['frequency'],
+                    times=rec['times'], total_count=rec.get('total_days', 30),
+                    start_date=start_date, end_date=end_date, notes=rec.get('notes', '')
+                )
+                st.balloons()
+                st.success("已加入药箱！")
+                st.session_state.show_confirm = False
+                time.sleep(1)
+                st.session_state.page = "cabinet"
+                st.rerun()
+        with col2:
+            if st.button("❌ 取消"):
+                st.session_state.show_confirm = False
+                st.rerun()
+
+# ========== 3. 我的药箱（含起止日期）==========
 elif st.session_state.page == "cabinet":
     st.title("💊 我的药箱")
-    meds = db.get_medicines()
-    if not meds:
-        st.info("📭 药箱为空")
+
+    medicines = db.get_medicines()
+    if not medicines:
+        st.info("📭 药箱为空，请先添加药品")
     else:
-        st.caption(f"共 {len(meds)} 种，剩余 {sum(m['total_count'] for m in meds)} 粒")
-        if "edit_id" not in st.session_state: st.session_state.edit_id = None
-        now_t = datetime.datetime.now().strftime("%H:%M")
+        for med in medicines:
+            with st.expander(f"{med['name']} - {med['dosage']}"):
+                st.write(f"**频率**：{med['frequency']}")
+                st.write(f"**时间**：{'、'.join(med.get('times', []))}")
+                st.write(f"**剩余数量**：{med.get('total_count', 0)}")
+                st.write(f"**用药周期**：{med.get('start_date', '未设置')} 至 {med.get('end_date', '未设置')}")
+                if med.get('notes'):
+                    st.write(f"**备注**：{med['notes']}")
 
-        for m in meds:
-            mid = m["id"]
-            if st.session_state.edit_id == mid:
-                st.markdown(f"**✏️ {m['name']}**")
-                n = st.text_input("名称", m["name"], key=f"en{mid}")
-                d = st.text_input("用量", m["dosage"], key=f"ed{mid}")
-                fo = ["每日1次","每日2次","每日3次","自定义"]
-                fi = fo.index(m["frequency"]) if m["frequency"] in fo else 0
-                f = st.selectbox("频率", fo, index=fi, key=f"ef{mid}")
-                T = {"每日1次":["08:00"],"每日2次":["08:00","20:00"],"每日3次":["08:00","14:00","20:00"]}
-                if f == "自定义":
-                    ts = st.text_input("时间", ",".join(m["times"]), key=f"et{mid}")
-                    times = [t.strip() for t in ts.split(",") if t.strip()]
-                else:
-                    times = T[f]
-                cnt = st.number_input("剩余", m["total_count"], 0, key=f"ec{mid}")
-                nt = st.text_area("备注", m.get("notes",""), key=f"nn{mid}")
-                c1,c2 = st.columns(2)
-                if c1.button("保存", key=f"sv{mid}"): db.update_medicine(mid,name=n,dosage=d,frequency=f,times=times,total_count=cnt,notes=nt); st.session_state.edit_id=None; st.rerun()
-                if c2.button("取消", key=f"cl{mid}"): st.session_state.edit_id=None; st.rerun()
-            else:
-                ts = "、".join(m["times"])
-                nx = next((t for t in m["times"] if t >= now_t), "明天 "+m["times"][0]) if m["times"] else "无"
-                st.markdown(f"**💊 {m['name']}**  {m['frequency']}  {m['dosage']}")
-                st.caption(f"🕐 {ts} 📦 剩余 {m['total_count']} 🔔 下次 {nx}")
-                if m.get("notes"): st.caption(f"📝 {m['notes']}")
-                c1,c2 = st.columns(2)
-                if c1.button("编辑", key=f"ed{mid}"): st.session_state.edit_id=mid; st.rerun()
-                if c2.button("删除", key=f"de{mid}"): db.delete_medicine(mid); st.rerun()
-            st.divider()
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("编辑", key=f"edit_{med['id']}"):
+                        st.session_state.edit_id = med['id']
+                        st.rerun()
+                with col2:
+                    if st.button("删除", key=f"del_{med['id']}"):
+                        db.delete_medicine(med['id'])
+                        st.rerun()
 
-# ========== AI问答 ==========
+                if st.session_state.get("edit_id") == med['id']:
+                    st.markdown("---")
+                    st.subheader("编辑药品")
+
+                    new_name = st.text_input("药品名称", med['name'], key=f"name_{med['id']}")
+                    new_dosage = st.text_input("用量", med['dosage'], key=f"dosage_{med['id']}")
+
+                    freq_options = ["每日1次", "每日2次", "每日3次", "自定义"]
+                    freq_idx = freq_options.index(med['frequency']) if med['frequency'] in freq_options else 0
+                    new_freq = st.selectbox("频率", freq_options, index=freq_idx, key=f"freq_{med['id']}")
+
+                    time_map = {"每日1次": ["08:00"], "每日2次": ["08:00", "20:00"], "每日3次": ["08:00", "14:00", "20:00"]}
+                    if new_freq == "自定义":
+                        new_times = st.text_input("服药时间（逗号分隔）", ','.join(med.get('times', ["08:00"])), key=f"times_{med['id']}")
+                        new_times = [t.strip() for t in new_times.split(',') if t.strip()]
+                    else:
+                        new_times = time_map[new_freq]
+                        st.caption(f"建议时间：{'、'.join(new_times)}")
+
+                    new_total = st.number_input("剩余数量", value=med.get('total_count', 0), key=f"total_{med['id']}")
+                    new_start = st.date_input("开始日期", value=date.fromisoformat(med.get('start_date', date.today().isoformat())) if med.get('start_date') else date.today(), key=f"start_{med['id']}")
+                    new_end = st.date_input("结束日期", value=date.fromisoformat(med.get('end_date', (date.today() + timedelta(days=30)).isoformat())) if med.get('end_date') else date.today() + timedelta(days=30), key=f"end_{med['id']}")
+                    new_notes = st.text_area("备注", med.get('notes', ''), key=f"notes_{med['id']}")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("保存", key=f"save_{med['id']}"):
+                            db.update_medicine(med['id'], name=new_name, dosage=new_dosage, frequency=new_freq,
+                                              times=new_times, total_count=new_total, start_date=new_start.isoformat(),
+                                              end_date=new_end.isoformat(), notes=new_notes)
+                            st.session_state.edit_id = None
+                            st.rerun()
+                    with col2:
+                        if st.button("取消", key=f"cancel_{med['id']}"):
+                            st.session_state.edit_id = None
+                            st.rerun()
+
+# ========== 4. AI问答（连接大模型）==========
 elif st.session_state.page == "qa":
     st.title("🤖 AI用药问答")
-    st.info("可以问我任何用药问题")
+    st.info("💡 可以问我任何用药相关问题，我会用专业知识为你解答")
 
-    SIM = {
-        "血压":"💊 降压药：每天固定时间服用，不要自行停药。忘记就尽快补服，接近下次时间则跳过。",
-        "血糖":"💊 降糖药：随餐服用，定时测血糖。心慌出冷汗立即吃糖。",
-        "忘记":"😅 想起就补服，快下次了就跳过，不要一次吃双倍！",
-        "副作用":"💊 头晕→观察，胃不适→饭后服，皮疹→就医。严重请停药。",
-        "间隔":"⏰ 每日1次→24小时，每日2次→12小时，每日3次→6-8小时。",
-    }
+    # 快捷提问
+    quick_questions = ["降压药怎么吃？", "忘记吃药了怎么办？", "药物有什么副作用？", "两种药能一起吃吗？"]
+    cols = st.columns(len(quick_questions))
+    for i, q in enumerate(quick_questions):
+        with cols[i]:
+            if st.button(q):
+                st.session_state.quick_question = q
+                st.rerun()
 
-    for q in ["降压药怎么吃？","忘记吃药了怎么办？","药物副作用？"]:
-        if st.button(q): st.session_state._ask=q; st.rerun()
+    # 处理快捷提问
+    if "quick_question" in st.session_state and st.session_state.quick_question:
+        with st.spinner("AI思考中..."):
+            answer = get_ai_answer(st.session_state.quick_question)
+            st.session_state.messages = st.session_state.get("messages", [])
+            st.session_state.messages.append({"role": "user", "content": st.session_state.quick_question})
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            del st.session_state.quick_question
+            st.rerun()
 
-    if st.session_state.get("_ask"):
-        q = st.session_state._ask; st.session_state._ask=""
-        db.add_chat_message("user", q)
-        ans = "（没找到匹配）"
-        for k,v in SIM.items():
-            if k in q: ans = v; break
-        if ans == "（没找到匹配）": ans = f"关于「{q}」，建议咨询医生。"
-        db.add_chat_message("assistant", ans)
+    # 显示历史消息
+    messages = st.session_state.get("messages", [])
+    for msg in messages:
+        st.chat_message(msg["role"]).write(msg["content"])
+
+    # 用户输入
+    if prompt := st.chat_input("输入你的用药问题..."):
+        st.chat_message("user").write(prompt)
+        with st.spinner("AI思考中..."):
+            answer = get_ai_answer(prompt)
+        st.chat_message("assistant").write(answer)
+        st.session_state.messages = st.session_state.get("messages", [])
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.messages.append({"role": "assistant", "content": answer})
         st.rerun()
 
-    inp = st.text_input("输入问题", label_visibility="collapsed")
-    if inp:
-        with st.spinner("思考中..."):
-            db.add_chat_message("user", inp)
-            ans = "（没找到匹配）"
-            for k,v in SIM.items():
-                if k in inp: ans = v; break
-            if ans == "（没找到匹配）": ans = f"关于「{inp}」，建议咨询医生。"
-            db.add_chat_message("assistant", ans)
+    # 清空对话
+    if st.button("🗑️ 清空对话"):
+        st.session_state.messages = []
         st.rerun()
-
-    for msg in db.get_chat_history(30):
-        st.chat_message("user" if msg["role"]=="user" else "assistant").write(msg["content"])
-
-    if db.get_chat_history(1) and st.button("🗑️ 清空对话"):
-        db.clear_chat_history(); st.rerun()
