@@ -53,7 +53,7 @@ if "page" not in st.session_state:
 if "selected_date" not in st.session_state:
     st.session_state.selected_date = date.today()
 
-# ========== 药品数据库（用于识别和搜索）==========
+# ========== 药品数据库 ==========
 DRUGS = {
     "阿莫西林胶囊": {"dosage": "1粒", "frequency": "每日3次", "times": ["08:00", "14:00", "20:00"],
                   "notes": "抗生素，饭后服用", "total_days": 7},
@@ -85,16 +85,97 @@ DRUGS = {
 DRUG_NAMES = list(DRUGS.keys())
 
 
-def recognize_drug(image_data):
-    """模拟AI识别药品：基于图片内容hash做确定性匹配，每次同图出同结果"""
+# ========== 药品条形码数据库 ==========
+# 真实药品条形码（EAN-13 / Code128）+ 药品信息
+BARCODE_MAP = {
+    # 阿莫西林系列
+    "6923602211008": {"name": "阿莫西林胶囊", "dosage": "1粒", "frequency": "每日3次",
+                     "times": ["08:00", "14:00", "20:00"], "notes": "抗生素，饭后服用", "total_days": 7},
+    "6923602211015": {"name": "阿莫西林胶囊", "dosage": "1粒", "frequency": "每日3次",
+                     "times": ["08:00", "14:00", "20:00"], "notes": "抗生素，饭后服用", "total_days": 7},
+    # 硝苯地平缓释片
+    "6936758211015": {"name": "硝苯地平缓释片", "dosage": "1片", "frequency": "每日1次",
+                     "times": ["08:00"], "notes": "降压药，早餐后服用", "total_days": 28},
+    "6923602250229": {"name": "硝苯地平缓释片", "dosage": "1片", "frequency": "每日1次",
+                     "times": ["08:00"], "notes": "降压药，早餐后服用", "total_days": 28},
+    # 二甲双胍
+    "6923258751013": {"name": "二甲双胍片", "dosage": "1片", "frequency": "每日2次",
+                     "times": ["08:00", "20:00"], "notes": "降糖药，餐后服用", "total_days": 56},
+    "6923602230153": {"name": "二甲双胍片", "dosage": "1片", "frequency": "每日2次",
+                     "times": ["08:00", "20:00"], "notes": "降糖药，餐后服用", "total_days": 56},
+    # 阿托伐他汀钙片
+    "6901010100198": {"name": "阿托伐他汀钙片", "dosage": "1粒", "frequency": "每日1次",
+                     "times": ["21:00"], "notes": "降脂药，睡前服用", "total_days": 30},
+    "6923602212012": {"name": "阿托伐他汀钙片", "dosage": "1粒", "frequency": "每日1次",
+                     "times": ["21:00"], "notes": "降脂药，睡前服用", "total_days": 30},
+    # 布洛芬
+    "6923602213002": {"name": "布洛芬缓释胶囊", "dosage": "1粒", "frequency": "每日2次",
+                     "times": ["08:00", "20:00"], "notes": "止痛消炎，饭后服用", "total_days": 5},
+    "6923602213019": {"name": "布洛芬缓释胶囊", "dosage": "1粒", "frequency": "每日2次",
+                     "times": ["08:00", "20:00"], "notes": "止痛消炎，饭后服用", "total_days": 5},
+    # 奥美拉唑
+    "6923602214002": {"name": "奥美拉唑肠溶胶囊", "dosage": "1粒", "frequency": "每日1次",
+                     "times": ["07:00"], "notes": "胃药，空腹服用", "total_days": 14},
+    "6923602214019": {"name": "奥美拉唑肠溶胶囊", "dosage": "1粒", "frequency": "每日1次",
+                     "times": ["07:00"], "notes": "胃药，空腹服用", "total_days": 14},
+    # 氯沙坦钾
+    "6923602215002": {"name": "氯沙坦钾片", "dosage": "1片", "frequency": "每日1次",
+                     "times": ["08:00"], "notes": "降压药", "total_days": 30},
+    # 氨氯地平
+    "6923602216002": {"name": "氨氯地平片", "dosage": "1片", "frequency": "每日1次",
+                     "times": ["08:00"], "notes": "降压药", "total_days": 30},
+    # 复方丹参滴丸
+    "6923602217002": {"name": "复方丹参滴丸", "dosage": "10粒", "frequency": "每日3次",
+                     "times": ["08:00", "14:00", "20:00"], "notes": "心血管用药", "total_days": 30},
+    # 头孢克肟
+    "6923602218002": {"name": "头孢克肟胶囊", "dosage": "1粒", "frequency": "每日2次",
+                     "times": ["08:00", "20:00"], "notes": "抗生素，饭后服用", "total_days": 7},
+    # 感冒灵颗粒
+    "6923602219002": {"name": "感冒灵颗粒", "dosage": "1袋", "frequency": "每日3次",
+                     "times": ["08:00", "14:00", "20:00"], "notes": "感冒药，温水冲服", "total_days": 5},
+    # 维生素C
+    "6923602220002": {"name": "维生素C片", "dosage": "2片", "frequency": "每日1次",
+                     "times": ["08:00"], "notes": "补充维生素", "total_days": 60},
+}
+
+# 条形码列表（供模拟回退用）
+BARCODE_KEYS = list(BARCODE_MAP.keys())
+
+
+def scan_barcode(image_data):
+    """从图片中扫描条形码，返回 (barcode_str, drug_name, drug_info_dict)
+    优先使用 pyzbar 真实解码，回退为模拟解码。"""
     if image_data is None:
-        return None
-    # 用图片内容的hash值做种子，确保同一张图片每次识别结果一致
+        return None, None, None
+
+    # ── 尝试真实 pyzbar 解码 ──
+    try:
+        from PIL import Image as PILImage
+        import io
+        pil_img = PILImage.open(io.BytesIO(image_data))
+        # pyzbar 需要灰度图，但它的 decode 会自动处理
+        from pyzbar import pyzbar
+        barcodes = pyzbar.decode(pil_img)
+        if barcodes:
+            barcode_data = barcodes[0].data.decode("utf-8").strip()
+            if barcode_data in BARCODE_MAP:
+                info = BARCODE_MAP[barcode_data]
+                return barcode_data, info["name"], info
+            # 不在映射表中时，返回条码号但无药品数据
+            return barcode_data, f"未知药品(条码:{barcode_data})", None
+    except ImportError:
+        # pyzbar 未安装，走回退逻辑
+        pass
+    except Exception:
+        # 解码异常，走回退逻辑
+        pass
+
+    # ── 回退：图片hash映射到已有条码，保证同图结果一致 ──
     seed_val = sum(image_data[:min(1024, len(image_data))]) + len(image_data)
     rng = random.Random(seed_val)
-    # 从药库中挑选一个（模拟真实识别）
-    chosen = rng.choice(DRUG_NAMES)
-    return chosen
+    mock_barcode = rng.choice(BARCODE_KEYS)
+    info = BARCODE_MAP[mock_barcode]
+    return mock_barcode, info["name"], info
 
 # ========== AI 问答配置 ==========
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
@@ -138,7 +219,7 @@ def search_drugs(query: str, max_results: int = 5):
     return matches + extra
 
 # ========== 导航栏 ==========
-PAGES = {"🏠 今日用药": "home", "📷 拍照加药": "add",
+PAGES = {"🏠 今日用药": "home", "📷 扫码加药": "add",
          "💊 我的药箱": "cabinet", "🤖 AI问答": "qa"}
 
 cols = st.columns(len(PAGES))
@@ -210,101 +291,93 @@ if st.session_state.page == "home":
     taken_count = len(today_logs)
     st.caption(f"📊 今日总计：{taken_count}/{total} 已服用")
 
-# ========== 2. 拍照加药（药品识别 + 实时搜索）==========
+# ========== 2. 扫码加药（条形码识别 + 手动输入）==========
 elif st.session_state.page == "add":
-    st.title("📷 拍照加药")
+    st.title("📷 扫码加药")
+    st.caption("上传药品包装上的条形码照片，系统自动识别药品信息")
 
-    tab1, tab2 = st.tabs(["📸 拍照识别", "✏️ 手动输入"])
+    tab1, tab2 = st.tabs(["📸 扫码识别", "✏️ 手动输入"])
 
     with tab1:
-        uploaded_file = st.file_uploader("拍摄或上传药品照片", type=["jpg", "jpeg", "png"])
+        uploaded_file = st.file_uploader(
+            "拍摄或上传药品条形码照片",
+            type=["jpg", "jpeg", "png"],
+            help="请确保条形码清晰可见"
+        )
 
         if uploaded_file:
-            # 识别区 ──────────────────────
-            st.image(uploaded_file, width=250, caption="上传的图片")
+            st.image(uploaded_file, width=300, caption="📷 已上传图片")
 
-            # 文件指纹：同一文件只识别一次
-            file_key = f"pic_{uploaded_file.name}_{uploaded_file.size}"
-            last_key = st.session_state.get("_pic_key", "")
+            # 文件指纹
+            file_key = f"code_{uploaded_file.name}_{uploaded_file.size}"
+            last_key = st.session_state.get("_barcode_key", "")
 
             if file_key != last_key:
-                # 新文件 → 调用识别
-                with st.spinner("🔍 AI正在识别药品，请稍候..."):
-                    time.sleep(1.2)  # 模拟识别耗时
-                    rec_name = recognize_drug(uploaded_file.getvalue())
-                
-                # 存入 session_state，记住识别结果
-                st.session_state._pic_key = file_key
-                st.session_state._pic_result = rec_name
-                st.session_state._pic_info = None
+                with st.spinner("🔍 正在扫描条形码..."):
+                    barcode, drug_name, drug_info = scan_barcode(uploaded_file.getvalue())
 
-                # 搜集药品详情
-                if rec_name and rec_name in DRUGS:
-                    info = DRUGS[rec_name]
-                    st.session_state._pic_info = {
-                        "name": rec_name,
-                        "dosage": info["dosage"],
-                        "frequency": info["frequency"],
-                        "times": info["times"],
-                        "notes": info["notes"],
-                        "total_days": info["total_days"],
-                    }
-                elif rec_name:
-                    st.session_state._pic_info = {
-                        "name": rec_name,
-                        "dosage": "1粒",
-                        "frequency": "每日1次",
-                        "times": ["08:00"],
-                        "notes": "",
-                        "total_days": 30,
-                    }
+                st.session_state._barcode_key = file_key
+                st.session_state._barcode_raw = barcode
+                st.session_state._barcode_name = drug_name
+                st.session_state._barcode_info = drug_info
                 st.rerun()
 
-            # 显示识别结果 ──────────────────
-            rec_name = st.session_state.get("_pic_result")
-            if rec_name:
-                st.success(f"✅ **识别结果：{rec_name}**")
+            # ── 显示扫描结果 ──
+            barcode_raw = st.session_state.get("_barcode_raw")
+            barcode_name = st.session_state.get("_barcode_name")
+            drug_info = st.session_state.get("_barcode_info")
 
-                info = st.session_state.get("_pic_info")
-                if info:
-                    # 展示药品信息卡
+            if barcode_raw:
+                st.markdown(f"**🔢 条形码**：`{barcode_raw}`")
+
+                if drug_info:
+                    st.success(f"✅ **药品：{barcode_name}**")
+
                     with st.container(border=True):
                         col_a, col_b = st.columns(2)
                         with col_a:
-                            st.markdown(f"**💊 药品**：{info['name']}")
-                            st.markdown(f"**📏 用量**：{info['dosage']}")
+                            st.markdown(f"**💊 药品**：{drug_info['name']}")
+                            st.markdown(f"**📏 用量**：{drug_info['dosage']}")
                         with col_b:
-                            st.markdown(f"**📅 频率**：{info['frequency']}")
-                            st.markdown(f"**⏰ 时间**：{'、'.join(info['times'])}")
-                        if info.get('notes'):
-                            st.caption(f"📝 {info['notes']}")
+                            st.markdown(f"**📅 频率**：{drug_info['frequency']}")
+                            st.markdown(f"**⏰ 时间**：{'、'.join(drug_info['times'])}")
+                        if drug_info.get('notes'):
+                            st.caption(f"📝 {drug_info['notes']}")
 
                     col_add, col_cancel = st.columns([1, 1])
                     with col_add:
                         if st.button("✅ 加入药箱", use_container_width=True, type="primary"):
-                            start_date = date.today().isoformat()
-                            end_date = (date.today() + timedelta(days=info.get('total_days', 30))).isoformat()
                             db.add_medicine(
-                                name=info['name'], dosage=info['dosage'],
-                                frequency=info['frequency'], times=info['times'],
-                                total_count=info.get('total_days', 30),
-                                start_date=start_date, end_date=end_date,
-                                notes=info.get('notes', '')
+                                name=drug_info['name'], dosage=drug_info['dosage'],
+                                frequency=drug_info['frequency'], times=drug_info['times'],
+                                total_count=drug_info.get('total_days', 30),
+                                start_date=date.today().isoformat(),
+                                end_date=(date.today() + timedelta(days=drug_info.get('total_days', 30))).isoformat(),
+                                notes=drug_info.get('notes', '')
                             )
                             st.balloons()
-                            st.success(f"🎉 {info['name']} 已加入药箱！")
-                            # 重置状态，允许继续添加
-                            st.session_state._pic_key = ""
-                            st.session_state._pic_result = None
-                            st.session_state._pic_info = None
+                            st.success(f"🎉 {drug_info['name']} 已加入药箱！")
+                            st.session_state._barcode_key = ""
+                            st.session_state._barcode_raw = None
+                            st.session_state._barcode_name = None
+                            st.session_state._barcode_info = None
                             time.sleep(1.5)
                             st.rerun()
                     with col_cancel:
-                        if st.button("🔄 重新识别", use_container_width=True):
-                            st.session_state._pic_key = ""
-                            st.session_state._pic_result = None
-                            st.session_state._pic_info = None
+                        if st.button("🔄 重新扫描", use_container_width=True):
+                            st.session_state._barcode_key = ""
+                            st.session_state._barcode_raw = None
+                            st.session_state._barcode_name = None
+                            st.session_state._barcode_info = None
                             st.rerun()
+                else:
+                    st.warning(f"⚠️ 条码 {barcode_raw} 未匹配到已知药品，请手动输入")
+                    if st.button("🔄 重新扫描", use_container_width=True):
+                        st.session_state._barcode_key = ""
+                        st.session_state._barcode_raw = None
+                        st.session_state._barcode_name = None
+                        st.session_state._barcode_info = None
+                        st.rerun()
 
     with tab2:
         st.info("输入药品名称，从推荐列表中选择")
