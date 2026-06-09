@@ -89,7 +89,7 @@ DRUG_NAMES = list(DRUGS.keys())
 # 真实药品条形码（EAN-13 / Code128）+ 药品信息
 BARCODE_MAP = {
     # 阿莫西林系列
-    "6923602211008": {"name": "阿莫西林胶囊", "dosage": "1粒", "frequency": "每日3次",
+    "6903447400157": {"name": "阿莫西林胶囊", "dosage": "1粒", "frequency": "每日3次",
                      "times": ["08:00", "14:00", "20:00"], "notes": "抗生素，饭后服用", "total_days": 7},
     "6923602211015": {"name": "阿莫西林胶囊", "dosage": "1粒", "frequency": "每日3次",
                      "times": ["08:00", "14:00", "20:00"], "notes": "抗生素，饭后服用", "total_days": 7},
@@ -109,7 +109,7 @@ BARCODE_MAP = {
     "6923602212012": {"name": "阿托伐他汀钙片", "dosage": "1粒", "frequency": "每日1次",
                      "times": ["21:00"], "notes": "降脂药，睡前服用", "total_days": 30},
     # 布洛芬
-    "6923602213002": {"name": "布洛芬缓释胶囊", "dosage": "1粒", "frequency": "每日2次",
+    "6913991300322": {"name": "布洛芬缓释胶囊", "dosage": "1粒", "frequency": "每日2次",
                      "times": ["08:00", "20:00"], "notes": "止痛消炎，饭后服用", "total_days": 5},
     "6923602213019": {"name": "布洛芬缓释胶囊", "dosage": "1粒", "frequency": "每日2次",
                      "times": ["08:00", "20:00"], "notes": "止痛消炎，饭后服用", "total_days": 5},
