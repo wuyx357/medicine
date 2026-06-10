@@ -257,23 +257,42 @@ if st.session_state.page == "home":
     if not valid_medicines:
         st.info("📭 当天没有用药计划")
     else:
+        # ========== 构建按时间排序的提醒列表 ==========
+        reminders = []
         for med in valid_medicines:
-            st.markdown(f"**💊 {med['name']}** - {med['dosage']} - {med['frequency']}")
             times = med.get("times", [])
             for t in times:
                 # 检查是否已服用
                 taken = any(l for l in today_logs if l["medicine_name"] == med["name"] and l["scheduled_time"] == t)
-                if taken:
-                    st.success(f"✅ {t} 已服用")
-                else:
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.warning(f"⏰ {t} 待服用")
-                    with col2:
-                        if st.button("已服", key=f"take_{med['id']}_{t}"):
-                            db.mark_taken_by_name(med["name"], t)
-                            st.rerun()
-            st.divider()
+                reminders.append({
+                    "time": t,
+                    "medicine_name": med["name"],
+                    "dosage": med["dosage"],
+                    "frequency": med["frequency"],
+                    "taken": taken,
+                    "med_id": med["id"]
+                })
+        
+        # 按时间排序
+        reminders.sort(key=lambda x: x["time"])
+        
+        # 显示提醒列表
+        for r in reminders:
+            time_display = r["time"]
+            med_name = r["medicine_name"]
+            dosage = r["dosage"]
+            taken = r["taken"]
+            
+            if taken:
+                st.success(f"✅ {time_display} {med_name} - {dosage}（已服用）")
+            else:
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.warning(f"⏰ {time_display} {med_name} - {dosage}")
+                with col2:
+                    if st.button("已服", key=f"take_{r['med_id']}_{r['time']}"):
+                        db.mark_taken_by_name(med_name, r["time"])
+                        st.rerun()
 
     # 统计数据
     total = sum(len(med.get("times", [])) for med in valid_medicines)
