@@ -6,7 +6,9 @@ AI 用药伴侣 - 改进版
 3. 我的药箱：支持设置药品起止日期（用药周期）
 4. AI问答：接入 DeepSeek 模型生成真实回答
 """
-
+import io
+from PIL import Image
+from pyzbar.pyzbar import decode
 import streamlit as st
 import datetime
 import os
@@ -141,6 +143,20 @@ BARCODE_MAP = {
 # 所有条形码编号列表（供显示用）
 BARCODE_KEYS = list(BARCODE_MAP.keys())
 
+def decode_barcode_from_image(image_bytes):
+    """从图片中自动解码条形码，返回条码数字字符串，失败返回None"""
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        # 转为灰度图，提高解码成功率
+        image = image.convert('L')
+        decoded = decode(image)
+        if decoded:
+            # 返回第一个解码到的条码
+            return decoded[0].data.decode('utf-8')
+        return None
+    except Exception as e:
+        print(f"解码失败: {e}")
+        return None
 
 def lookup_barcode(barcode_str):
     """根据条形码字符串查询药品，返回 (drug_name, drug_info_dict)"""
@@ -272,31 +288,33 @@ elif st.session_state.page == "add":
     tab1, tab2 = st.tabs(["📸 扫码识别", "✏️ 手动输入"])
 
     with tab1:
-        uploaded_file = st.file_uploader(
-            "拍摄或上传药品条形码照片",
-            type=["jpg", "jpeg", "png"],
-            help="上传后查看图片上的条码数字，在下框输入"
-        )
-
-        if uploaded_file:
-            st.image(uploaded_file, width=300, caption="📷 上传的图片")
-
-        st.markdown("---")
-        st.markdown("##### 🔢 输入条形码数字")
-        st.caption("查看上面图片中的条形码数字，输入到下方")
-
-        barcode_input = st.text_input(
-            "条形码编号",
-            placeholder="例如：6903447400157",
-            help="输入药品包装上条形码下方的13位数字"
-        )
-
-        if barcode_input:
-            drug_name, drug_info = lookup_barcode(barcode_input)
-
+    st.markdown("##### 📸 拍照自动识别")
+    st.caption("上传药品条形码照片，系统会自动识别条码数字并查询药品")
+    
+    uploaded_file = st.file_uploader(
+        "拍摄或上传药品条形码照片",
+        type=["jpg", "jpeg", "png"],
+        key="barcode_uploader",
+        help="请确保条形码清晰、光线充足、水平放置"
+    )
+    
+    if uploaded_file:
+        # 显示上传的图片
+        st.image(uploaded_file, width=300, caption="📷 上传的图片")
+        
+        # 自动解码条码
+        with st.spinner("🔍 正在识别条形码..."):
+            barcode_number = decode_barcode_from_image(uploaded_file.getvalue())
+        
+        if barcode_number:
+            st.success(f"📌 识别到条码：`{barcode_number}`")
+            
+            # 自动查询药品
+            drug_name, drug_info = lookup_barcode(barcode_number)
+            
             if drug_info:
-                st.success(f"✅ **匹配到：{drug_name}**")
-
+                st.success(f"✅ **匹配到药品：{drug_name}**")
+                
                 with st.container(border=True):
                     col_a, col_b = st.columns(2)
                     with col_a:
@@ -307,8 +325,8 @@ elif st.session_state.page == "add":
                         st.markdown(f"**⏰ 时间**：{'、'.join(drug_info['times'])}")
                     if drug_info.get('notes'):
                         st.caption(f"📝 {drug_info['notes']}")
-
-                if st.button("✅ 加入药箱", use_container_width=True, type="primary"):
+                
+                if st.button("✅ 加入药箱", use_container_width=True, type="primary", key="auto_add"):
                     db.add_medicine(
                         name=drug_info['name'], dosage=drug_info['dosage'],
                         frequency=drug_info['frequency'], times=drug_info['times'],
@@ -322,11 +340,43 @@ elif st.session_state.page == "add":
                     time.sleep(1.5)
                     st.rerun()
             else:
-                st.warning(f"⚠️ 条码 `{barcode_input}` 未匹配到已知药品")
-                st.caption("支持的条码：")
-                # 显示前10个条码作为参考
-                for bk in BARCODE_KEYS[:10]:
+                st.warning(f"⚠️ 条码 `{barcode_number}` 未匹配到已知药品")
+                st.caption("支持的条码示例：")
+                for bk in list(BARCODE_KEYS)[:8]:
                     st.text(f"  {bk}  →  {BARCODE_MAP[bk]['name']}")
+                
+                # 提供手动输入备选
+                with st.expander("📝 手动输入药品信息"):
+                    manual_name = st.text_input("药品名称", key="manual_name_fallback")
+                    if st.button("手动添加", key="manual_add_fallback"):
+                        if manual_name:
+                            db.add_medicine(
+                                name=manual_name, dosage="1粒", frequency="每日1次",
+                                times=["08:00"], total_count=30,
+                                start_date=date.today().isoformat(),
+                                end_date=(date.today() + timedelta(days=30)).isoformat(), notes=""
+                            )
+                            st.success(f"已添加：{manual_name}")
+                            st.rerun()
+        else:
+            st.error("❌ 未能识别到条形码")
+            st.caption("请确保：")
+            st.caption("1. 条形码清晰可见")
+            st.caption("2. 光线充足，无反光")
+            st.caption("3. 条形码水平放置")
+            st.caption("4. 图片不要太模糊")
+            
+            # 提供手动输入备选
+            with st.expander("📝 手动输入条码数字"):
+                manual_barcode = st.text_input("输入条形码编号", placeholder="例如：6903447400157", key="manual_barcode_fallback")
+                if manual_barcode:
+                    drug_name, drug_info = lookup_barcode(manual_barcode)
+                    if drug_info:
+                        st.success(f"匹配到：{drug_name}")
+                        if st.button("加入药箱", key="manual_barcode_add"):
+                            db.add_medicine(...)  # 同上
+                    else:
+                        st.warning("未匹配到药品")
 
     with tab2:
         st.info("输入药品名称 或 条形码编号，快速添加药品")
